@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -57,47 +58,78 @@ func downloadFile(url, to string) error {
 	return nil
 }
 
+type worker struct {
+	i  int
+	ch chan arlo.Recording
+	wg *sync.WaitGroup
+}
+
+func (w *worker) work() {
+	log.Printf("Worker %v starting.", w.i)
+	for r := range w.ch {
+		filename := fmt.Sprintf("%s %s.mp4", time.Unix(0, r.UtcCreatedDate*int64(time.Millisecond)).Format(("2006-01-02 15:04:05")), r.UniqueId)
+		outputPath := filepath.Join("videos", filename)
+		_, err := os.Stat(outputPath)
+		if err == nil {
+			log.Printf("[W%v] Skipping video already downloaded: %v", w.i, filename)
+			continue
+		}
+
+		if err := downloadFile(r.PresignedContentUrl, outputPath); err != nil {
+			log.Println(err)
+		} else {
+			log.Printf("[W%v] Downloaded video: %v\n", w.i, filename)
+		}
+	}
+	log.Printf("Worker %v done.", w.i)
+	w.wg.Done()
+}
+
+const numWorkers = 5
+
 func main() {
 
 	c := readConfig()
 
 	// Instantiating the Arlo object automatically calls Login(), which returns an oAuth token that gets cached.
 	// Subsequent successful calls to login will update the oAuth token.
-	arlo, err := arlo.Login(c.Email, c.Password)
+	a, err := arlo.Login(c.Email, c.Password)
 	if err != nil {
 		log.Printf("Failed to login: %s\n", err)
 		return
 	}
 	// At this point you're logged into Arlo.
 
-	now := time.Now()
-	start := now.Add(time.Duration(c.Days) * 24 * time.Hour)
+	recordingChan := make(chan arlo.Recording)
+	var wg sync.WaitGroup
+	wg.Add(numWorkers)
 
-	// Get all of the recordings for a date range.
-	library, err := arlo.GetLibrary(start, now)
-	if err != nil {
-		log.Println(err)
-		return
+	for i := 0; i < numWorkers; i++ {
+		w := worker{
+			i:  i,
+			wg: &wg,
+			ch: recordingChan,
+		}
+		go w.work()
 	}
 
-	for _, recording := range *library {
+	day0 := time.Now()
+	for i := 0; i <= c.Days; i++ {
+		d := day0.Add(-time.Duration(i) * 24 * time.Hour)
+		log.Println("FETCHING for date %v", d)
 
-		filename := fmt.Sprintf("%s %s.mp4", time.Unix(0, recording.UtcCreatedDate*int64(time.Millisecond)).Format(("2006-01-02 15:04:05")), recording.UniqueId)
-		outputPath := filepath.Join("videos", filename)
-		_, err := os.Stat(outputPath)
-		if err == nil {
-			log.Printf("Skipping video already downloaded: %v", filename)
-			continue
-		}
-
-		// The videos produced by Arlo are pretty small, even in their longest, best quality settings.
-		// DownloadFile() efficiently streams the file from the http.Response.Body directly to a file.
-		if err := downloadFile(recording.PresignedContentUrl, outputPath); err != nil {
+		// Get all of the recordings for a date.
+		library, err := a.GetLibrary(d, d)
+		if err != nil {
 			log.Println(err)
-		} else {
-			log.Printf("Downloaded video: %v\n", filename)
+			return
 		}
 
+		for _, recording := range *library {
+			recordingChan <- recording
+		}
 	}
+	close(recordingChan)
+	wg.Wait()
 
 }
