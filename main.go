@@ -22,6 +22,7 @@ type config struct {
 	Email    string
 	Password string
 	Days     int
+	Workers  int
 }
 
 func readConfig() config {
@@ -85,8 +86,6 @@ func (w *worker) work() {
 	w.wg.Done()
 }
 
-const numWorkers = 5
-
 func main() {
 
 	c := readConfig()
@@ -98,13 +97,14 @@ func main() {
 		log.Printf("Failed to login: %s\n", err)
 		return
 	}
-	// At this point you're logged into Arlo.
+
+	_ = os.Mkdir("videos", os.ModePerm)
 
 	recordingChan := make(chan arlo.Recording)
 	var wg sync.WaitGroup
-	wg.Add(numWorkers)
+	wg.Add(c.Workers)
 
-	for i := 0; i < numWorkers; i++ {
+	for i := 0; i < c.Workers; i++ {
 		w := worker{
 			i:  i,
 			wg: &wg,
@@ -113,21 +113,18 @@ func main() {
 		go w.work()
 	}
 
-	day0 := time.Now()
-	for i := 0; i <= c.Days; i++ {
-		d := day0.Add(-time.Duration(i) * 24 * time.Hour)
-		log.Println("FETCHING for date %v", d)
+	now := time.Now()
+	start := now.Add(-time.Duration(c.Days) * 24 * time.Hour)
 
-		// Get all of the recordings for a date.
-		library, err := a.GetLibrary(d, d)
-		if err != nil {
-			log.Println(err)
-			return
-		}
+	// Get all of the recordings for a date.
+	library, err := a.GetLibrary(start, now)
+	if err != nil {
+		log.Println(err)
+		return
+	}
 
-		for _, recording := range *library {
-			recordingChan <- recording
-		}
+	for _, recording := range *library {
+		recordingChan <- recording
 	}
 	close(recordingChan)
 	wg.Wait()
