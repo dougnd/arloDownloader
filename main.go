@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
-	"github.com/jeffreydwalter/arlo-golang"
+	"github.com/jeffreydwalter/arlo-go"
 	"github.com/pkg/errors"
 )
 
@@ -68,7 +68,7 @@ type worker struct {
 func (w *worker) work() {
 	log.Printf("Worker %v starting.", w.i)
 	for r := range w.ch {
-		filename := fmt.Sprintf("%s %s.mp4", time.Unix(0, r.UtcCreatedDate*int64(time.Millisecond)).Format(("2006-01-02 15:04:05")), r.UniqueId)
+		filename := fmt.Sprintf("%s-%s.mp4", time.Unix(0, r.UtcCreatedDate*int64(time.Millisecond)).Format(("2006-01-02T15-04-05")), r.UniqueId)
 		outputPath := filepath.Join("videos", filename)
 		_, err := os.Stat(outputPath)
 		if err == nil {
